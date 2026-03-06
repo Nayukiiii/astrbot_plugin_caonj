@@ -1,0 +1,76 @@
+{
+    "caonj_probability": {
+        "type": "float",
+        "description": "草nj触发概率（%）",
+        "hint": "发送草nj指令后实际触发的概率，取值 0~100。例如填 30 表示 30% 概率触发，填 100 则必定触发。",
+        "default": 30,
+        "slider": {
+            "min": 0,
+            "max": 100,
+            "step": 5
+        }
+    },
+    "caonj_daily_limit": {
+        "type": "int",
+        "description": "每人每天草nj次数上限",
+        "hint": "每位用户每天最多可以成功草nj的次数，超出后提示已达上限。",
+        "default": 5,
+        "slider": {
+            "min": 1,
+            "max": 20,
+            "step": 1
+        }
+    },
+    "nj_qq": {
+        "type": "string",
+        "description": "nj的QQ号",
+        "hint": "用于获取nj头像和显示在草nj排行榜、体内液体查询中。请填写真实QQ号。",
+        "default": ""
+    },
+    "nj_name": {
+        "type": "string",
+        "description": "nj的昵称",
+        "hint": "显示在排行榜和体内液体查询中的nj名字。",
+        "default": "宁隽"
+    },
+    "whitelist_groups": {
+        "type": "list",
+        "description": "群聊白名单",
+        "hint": "若填写，则插件仅在这些群生效。",
+        "default": []
+    },
+    "blacklist_groups": {
+        "type": "list",
+        "description": "群聊黑名单",
+        "hint": "在此列表中的群聊将禁用此插件功能。",
+        "default": []
+    },
+    "auto_withdraw_enabled": {
+        "type": "bool",
+        "description": "定时自动撤回",
+        "hint": "开启后，将在发送结果后延迟撤回消息以防刷屏。当前仅在 aiocqhttp/OneBot 平台可用。",
+        "default": false
+    },
+    "auto_withdraw_delay_seconds": {
+        "type": "int",
+        "description": "自动撤回延迟(秒)",
+        "hint": "自动撤回延迟时间，单位秒。仅在开启【定时自动撤回】时生效。",
+        "default": 5,
+        "slider": {
+            "min": 1,
+            "max": 60,
+            "step": 1
+        }
+    },
+    "iterations": {
+        "type": "int",
+        "description": "关系图生成迭代次数",
+        "hint": "控制关系图生成的精细度。人数少的话可以调小一点，推荐140。",
+        "default": 140,
+        "slider": {
+            "min": 50,
+            "max": 180,
+            "step": 10
+        }
+    }
+}

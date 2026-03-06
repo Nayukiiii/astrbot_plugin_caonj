@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        :root {
+            --bg-page: #FFF5F7; --bg-container: #FFFFFF;
+            --accent: #C85A7C; --accent-light: #FFB7C5; --accent-soft: #FFD6E0;
+            --deep: #A0365A; --text-primary: #4A3F4B; --text-light: #FFFFFF;
+            --rank-1: #FFD700; --rank-2: #C0C0C0; --rank-3: #CD7F32;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-page); margin: 0; padding: 0;
+            width: 420px; display: inline-block;
+        }
+        .container { background: var(--bg-container); width: 420px; overflow: hidden; }
+        .header {
+            background: linear-gradient(135deg, var(--accent-light) 0%, var(--accent) 60%, var(--deep) 100%);
+            color: var(--text-light); padding: 16px 20px 12px;
+            text-align: center; font-size: 20px; font-weight: bold;
+            letter-spacing: 2px; text-shadow: 1px 1px 0 rgba(0,0,0,0.15);
+            position: relative;
+        }
+        .header::before, .header::after {
+            content: '🌸'; position: absolute; font-size: 14px; opacity: 0.4;
+        }
+        .header::before { top: 5px; left: 10px; }
+        .header::after { bottom: 5px; right: 10px; }
+        .profile-section {
+            display: flex; flex-direction: column; align-items: center;
+            padding: 20px 0 16px;
+            background: linear-gradient(180deg, #FFF8FA 0%, #FFFFFF 100%);
+            border-bottom: 2px solid var(--accent-soft);
+        }
+        .nj-avatar {
+            width: 80px; height: 80px;
+            border: 3px solid var(--accent);
+            box-shadow: 3px 3px 0 var(--accent-soft);
+        }
+        .nj-name {
+            margin-top: 10px; color: var(--accent); font-size: 16px; font-weight: bold;
+        }
+        .stats-grid {
+            display: flex; justify-content: center; gap: 20px;
+            padding: 16px 20px;
+            background: #FFFAFC;
+            border-bottom: 2px solid #FFF0F5;
+        }
+        .stat-box {
+            display: flex; flex-direction: column; align-items: center;
+            background: var(--bg-container);
+            border: 2px solid var(--accent-light);
+            box-shadow: 2px 2px 0 var(--accent-soft);
+            padding: 12px 18px; min-width: 110px;
+        }
+        .stat-value { font-size: 22px; font-weight: bold; color: var(--accent); }
+        .stat-label { font-size: 11px; color: #8A7F8B; margin-top: 4px; }
+        .reset-info {
+            padding: 10px 20px; text-align: center;
+            font-size: 12px; color: #8A7F8B;
+            border-bottom: 2px solid #FFF0F5; line-height: 1.8;
+        }
+        .reset-info span { color: var(--accent); font-weight: bold; }
+        .ranking-header {
+            padding: 10px 15px 6px; font-size: 13px; font-weight: bold;
+            color: var(--accent); border-bottom: 2px solid #FFF0F5;
+            letter-spacing: 1px;
+        }
+        .item {
+            display: flex; align-items: center;
+            padding: 0 15px; height: 66px;
+            border-bottom: 2px solid #FFF0F5;
+        }
+        .item:nth-child(odd) { background: #FFFAFC; }
+        .rank {
+            font-weight: bold; width: 30px; color: var(--accent);
+            font-size: 16px; flex-shrink: 0; text-align: center;
+        }
+        .rank.top1 { color: var(--rank-1); font-size: 20px; text-shadow: 1px 1px 0 #DAA520; }
+        .rank.top2 { color: var(--rank-2); font-size: 18px; }
+        .rank.top3 { color: var(--rank-3); font-size: 18px; }
+        .avatar {
+            width: 42px; height: 42px;
+            border: 2px solid var(--accent-light);
+            box-shadow: 2px 2px 0px var(--accent-soft);
+            margin: 0 10px; flex-shrink: 0;
+        }
+        .name {
+            flex: 1; font-size: 14px; color: var(--text-primary);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .user-stats { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex-shrink: 0; }
+        .count-tag {
+            background: linear-gradient(135deg, var(--accent-light), var(--accent));
+            color: var(--text-light); padding: 2px 8px; font-size: 11px; white-space: nowrap;
+            box-shadow: 1px 1px 0 var(--accent-soft);
+        }
+        .ml-tag {
+            background: linear-gradient(135deg, var(--accent), var(--deep));
+            color: var(--text-light); padding: 2px 8px; font-size: 11px; white-space: nowrap;
+            box-shadow: 1px 1px 0 var(--accent-soft);
+        }
+        .footer { padding: 10px; text-align: center; font-size: 11px; color: var(--accent); opacity: 0.6; }
+        .empty { padding: 20px; text-align: center; color: #8A7F8B; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">💦 nj 体内液体报告 💦</div>
+        <div class="profile-section">
+            {% if nj_qq %}
+            <img class="nj-avatar" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ nj_qq }}&spec=100">
+            {% else %}
+            <div style="width:80px;height:80px;background:linear-gradient(135deg,var(--accent-light),var(--accent));display:flex;align-items:center;justify-content:center;font-size:32px;border:3px solid var(--accent);">💕</div>
+            {% endif %}
+            <div class="nj-name">{{ nj_name }}</div>
+        </div>
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-value">{{ total_count }}</div>
+                <div class="stat-label">本月累计注入次数</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{{ "%.1f"|format(total_ml) }} ml</div>
+                <div class="stat-label">体内总量</div>
+            </div>
+        </div>
+        <div class="reset-info">
+            本月刷新时间：<span>{{ reset_date }}</span>　距下次刷新：<span>{{ days_left }}天{{ hours_left }}小时</span>
+        </div>
+        {% if ranking %}
+        <div class="ranking-header">💉 注入排行榜</div>
+        {% for user in ranking %}
+        <div class="item">
+            <div class="rank {% if loop.index == 1 %}top1{% elif loop.index == 2 %}top2{% elif loop.index == 3 %}top3{% endif %}">#{{ loop.index }}</div>
+            <img class="avatar" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ user.uid }}&spec=100&t={{ range(1,99999)|random }}">
+            <div class="name">{{ user.name }}</div>
+            <div class="user-stats">
+                <div class="count-tag">{{ user.count }} 次</div>
+                <div class="ml-tag">{{ "%.1f"|format(user.ml) }} ml</div>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty">本月还没有人注入过哦~</div>
+        {% endif %}
+        <div class="footer">🌸 数据每月1日0点自动刷新 🌸</div>
+    </div>
+</body>
+</html>
