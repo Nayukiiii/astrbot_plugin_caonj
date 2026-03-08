@@ -11,7 +11,27 @@ from datetime import datetime
 CMD_CAONJ         = "草nj"       # 触发草nj
 CMD_CAONJ_RANKING = "草nj排行"   # 查看谁草的最多
 CMD_CAONJ_GRAPH   = "草nj关系图" # 今日草nj关系图
+CMD_NJ_BATTLE     = "nj战绩"     # nj注入战绩排行
 # ============================================================
+
+import json as _json
+import random as _random_mod
+
+def _load_comments(json_path: str) -> list:
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return _json.load(f).get("ml_tiers", [])
+    except Exception:
+        return []
+
+def _pick_comment(tiers: list, ml: float) -> str | None:
+    for tier in tiers:
+        if ml >= tier["min_ml"]:
+            comments = [c for c in tier.get("comments", []) if c]
+            if comments:
+                return _random_mod.choice(comments)
+            return None
+    return None
 
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
@@ -29,6 +49,18 @@ from .src.utils import (
     is_allowed_group,
     resolve_member_name,
 )
+from .nj_body_render import render_nj_body as _render_nj_body
+from .nj_battle_render import render_nj_battle as _render_nj_battle
+
+
+def _fmt_ml(ml: float) -> str:
+    """将 ml 数值格式化为公制可读字符串"""
+    if ml < 1.0:
+        return f"{ml * 1000:.0f} µL"
+    elif ml < 1000.0:
+        return f"{ml:.1f} mL"
+    else:
+        return f"{ml / 1000:.2f} L"
 
 
 class CaonjPlugin(Star):
@@ -58,6 +90,16 @@ class CaonjPlugin(Star):
 
         # 草nj内外选择等待状态 {group_id: {user_id: True}}
         self._caonj_pending: dict[str, dict[str, bool]] = {}
+
+        # 反草等待状态 {group_id: {user_id: True}}  —— nj反草发起者
+        self._fancao_pending: dict[str, dict[str, bool]] = {}
+
+        # nj战绩数据文件（30天，记录nj注入了谁多少量）
+        self.nj_battle_file = os.path.join(self.data_dir, "nj_battle.json")
+        self.nj_battle_data = load_json(self.nj_battle_file, {})
+
+        self._body_comments   = _load_comments(os.path.join(self.curr_dir, "nj_body_comments.json"))
+        self._battle_comments = _load_comments(os.path.join(self.curr_dir, "nj_battle_comments.json"))
 
         logger.info(f"草nj插件已加载。数据目录: {self.data_dir}")
 
@@ -207,6 +249,37 @@ class CaonjPlugin(Star):
         caonj_prob = max(0.0, min(100.0, caonj_prob))
         if random.uniform(0, 100) > caonj_prob:
             fake_pct = random.randint(1, 99)
+
+            # 反草判定：fake_pct >= 阈值才有资格，再用 fake_pct 本身作概率掷骰子
+            fancao_threshold = float(self.config.get("fancao_probability", 50))
+            fancao_threshold = max(0.0, min(99.0, fancao_threshold))
+            if fake_pct >= fancao_threshold and random.uniform(0, 100) < fake_pct:
+                # 反草成功 —— 进入发起者的等待状态
+                user_name = event.get_sender_name() or f"用户({user_id})"
+                nj_name   = self.config.get("nj_name", "宁隽")
+                if group_id not in self._fancao_pending:
+                    self._fancao_pending[group_id] = {}
+                self._fancao_pending[group_id][user_id] = True
+
+                text = (
+                    f" nj不甘示弱，反草成功！🔥\n"
+                    f"【{nj_name}】反草了【{user_name}】！\n\n"
+                    f"请选择：回复【里面】或【外面】"
+                )
+                if self._can_onebot_withdraw(event):
+                    message_id = await self._send_onebot_message(
+                        event,
+                        message=[
+                            {"type": "at", "data": {"qq": user_id}},
+                            {"type": "text", "data": {"text": text}},
+                        ],
+                    )
+                    if message_id is not None:
+                        self._schedule_onebot_delete_msg(event.bot, message_id=message_id)
+                    return
+                yield event.chain_result([Comp.At(qq=user_id), Comp.Plain(text)])
+                return
+
             yield event.plain_result(f"在 {fake_pct}% 的时候被nj逃走了")
             return
 
@@ -308,10 +381,11 @@ class CaonjPlugin(Star):
         if msg == "里面":
             ml = round(random.uniform(5.0, 5000.0), 1)
             self._record_nj_body(group_id, user_id, ml)
+            _body_comment = _pick_comment(self._body_comments, ml)
             text = (
                 f" 【{user_name}】选择了射在里面！\n"
-                f"本次注入量：{ml} ml\n"
-                f"{nj_name} 感觉热热的~"
+                f"本次注入量：{_fmt_ml(ml)}\n"
+                + (_body_comment if _body_comment else f"{nj_name} 感觉热热的~")
             )
         else:
             text = (
@@ -334,8 +408,171 @@ class CaonjPlugin(Star):
         event.stop_event()
 
     # ============================================================
-    # /草nj排行
+    # 反草内外选择监听
     # ============================================================
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def fancao_choice_listener(self, event: AstrMessageEvent):
+        """监听反草内外选择的回复（nj草发起者）"""
+        if event.is_private_chat():
+            return
+
+        group_id = str(event.get_group_id())
+        user_id  = str(event.get_sender_id())
+
+        if not self._fancao_pending.get(group_id, {}).get(user_id):
+            return
+
+        msg = event.message_str.strip()
+        if msg not in ("里面", "外面"):
+            return
+
+        # 清除等待状态
+        del self._fancao_pending[group_id][user_id]
+
+        user_name = event.get_sender_name() or f"用户({user_id})"
+        nj_name   = self.config.get("nj_name", "宁隽")
+
+        if msg == "里面":
+            ml = round(random.uniform(5.0, 5000.0), 1)
+            # 记录nj战绩（nj注入了该user）
+            self._record_nj_battle(group_id, user_id, ml)
+            _battle_comment = _pick_comment(self._battle_comments, ml)
+            text = (
+                f" 【{user_name}】选择了让nj射在里面！\n"
+                f"【{nj_name}】本次注入量：{_fmt_ml(ml)}\n"
+                + (_battle_comment if _battle_comment else f"【{user_name}】感觉热热的~")
+            )
+        else:
+            text = (
+                f" 【{user_name}】选择了让nj射在外面！✨\n"
+                f"【{nj_name}】松了一口气~"
+            )
+
+        if self._can_onebot_withdraw(event):
+            await self._send_onebot_message(
+                event,
+                message=[
+                    {"type": "at", "data": {"qq": user_id}},
+                    {"type": "text", "data": {"text": text}},
+                ],
+            )
+            event.stop_event()
+            return
+
+        yield event.chain_result([Comp.At(qq=user_id), Comp.Plain(text)])
+        event.stop_event()
+
+    # ============================================================
+    # nj战绩数据辅助
+    # ============================================================
+
+    def _record_nj_battle(self, group_id: str, victim_id: str, ml: float) -> None:
+        """记录nj反草注入量（30天滚动，按 victim 统计）"""
+        now = time.time()
+        if group_id not in self.nj_battle_data:
+            self.nj_battle_data[group_id] = {}
+        gdata = self.nj_battle_data[group_id]
+        if victim_id not in gdata:
+            gdata[victim_id] = {"records": []}
+        gdata[victim_id]["records"].append({"ts": now, "ml": ml})
+        self._clean_nj_battle()
+        save_json(self.nj_battle_file, self.nj_battle_data)
+
+    def _clean_nj_battle(self) -> None:
+        """清理30天前的nj战绩记录"""
+        now = time.time()
+        cutoff = 30 * 24 * 3600
+        new_data = {}
+        for gid, users in self.nj_battle_data.items():
+            new_users = {}
+            for uid, udata in users.items():
+                valid = [r for r in udata.get("records", []) if now - r["ts"] < cutoff]
+                if valid:
+                    new_users[uid] = {"records": valid}
+            if new_users:
+                new_data[gid] = new_users
+        self.nj_battle_data = new_data
+
+    # ============================================================
+    # /nj战绩
+    # ============================================================
+
+    @filter.command(CMD_NJ_BATTLE)
+    async def nj_battle(self, event: AstrMessageEvent):
+        async for result in self._cmd_nj_battle(event):
+            yield result
+
+    async def _cmd_nj_battle(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+
+        self._clean_nj_battle()
+        gdata = self.nj_battle_data.get(group_id, {})
+
+        if not gdata:
+            yield event.plain_result("近30天nj还没有成功反草过任何人，nj很老实~")
+            return
+
+        # 拉群昵称
+        user_map = {}
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                assert isinstance(event, AiocqhttpMessageEvent)
+                members = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id)
+                )
+                if isinstance(members, dict) and "data" in members and isinstance(members["data"], list):
+                    members = members["data"]
+                for m in members:
+                    uid = str(m.get("user_id"))
+                    user_map[uid] = m.get("card") or m.get("nickname") or uid
+        except Exception:
+            pass
+
+        # 聚合数据
+        ranking = []
+        for uid, udata in gdata.items():
+            records = udata.get("records", [])
+            total_ml = sum(r["ml"] for r in records)
+            count    = len(records)
+            ranking.append({
+                "uid":   uid,
+                "name":  user_map.get(uid, f"用户({uid})"),
+                "count": count,
+                "_ml_raw": total_ml,
+                "ml":    _fmt_ml(total_ml),
+            })
+
+        ranking_by_ml    = sorted(ranking, key=lambda x: x["_ml_raw"], reverse=True)[:10]
+        ranking_by_count = sorted(ranking, key=lambda x: x["count"],   reverse=True)[:10]
+
+        nj_qq   = self.config.get("nj_qq",   "")
+        nj_name = self.config.get("nj_name", "宁隽")
+
+        import tempfile
+        tmp_path = tempfile.mktemp(suffix=".png")
+        try:
+            await _render_nj_battle(
+                nj_qq=nj_qq,
+                nj_name=nj_name,
+                ranking_by_ml=ranking_by_ml,
+                ranking_by_count=ranking_by_count,
+                out_path=tmp_path,
+                cache_dir=os.path.join(self.curr_dir, "avatar_cache"),
+                titles_path=os.path.join(self.curr_dir, "nj_battle_titles.json"),
+            )
+            yield event.image_result(tmp_path)
+        except Exception as e:
+            logger.error(f"渲染nj战绩失败: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     @filter.command(CMD_CAONJ_RANKING)
     async def caonj_ranking(self, event: AstrMessageEvent):
@@ -563,64 +800,45 @@ class CaonjPlugin(Star):
         except Exception:
             pass
 
-        ranking = sorted(
+        _raw_ranking = sorted(
             [
                 {
                     "uid": uid,
                     "name": user_map.get(uid, f"用户({uid})"),
                     "count": d["count"],
-                    "ml": d["ml"],
+                    "_ml_raw": d["ml"],
                 }
                 for uid, d in users_data.items()
             ],
-            key=lambda x: x["ml"],
+            key=lambda x: x["_ml_raw"],
             reverse=True,
         )
+        ranking = [
+            {**r, "ml": _fmt_ml(r["_ml_raw"])} for r in _raw_ranking
+        ][:10]
 
-        template_path = os.path.join(self.curr_dir, "nj_body.html")
-        if not os.path.exists(template_path):
-            yield event.plain_result("错误：找不到模板文件 nj_body.html")
-            return
-
-        with open(template_path, "r", encoding="utf-8") as f:
-            template_content = f.read()
-
-        header_h        = 80
-        profile_h       = 130
-        stats_h         = 90
-        reset_h         = 50
-        ranking_header_h = 40 if ranking else 0
-        item_h          = 66
-        footer_h        = 36
-        empty_h         = 50 if not ranking else 0
-        dynamic_height  = (
-            header_h + profile_h + stats_h + reset_h
-            + ranking_header_h + (len(ranking) * item_h)
-            + empty_h + footer_h
-        )
-
+        import tempfile
+        tmp_path = tempfile.mktemp(suffix=".png")
         try:
-            url = await self.html_render(
-                template_content,
-                {
-                    "nj_qq": nj_qq,
-                    "nj_name": nj_name,
-                    "total_ml": total_ml,
-                    "total_count": total_count,
-                    "reset_date": reset_date,
-                    "days_left": days_left,
-                    "hours_left": hours_left,
-                    "ranking": ranking,
-                },
-                options={
-                    "type": "png", "quality": None, "full_page": False,
-                    "clip": {"x": 0, "y": 0, "width": 420, "height": dynamic_height},
-                    "scale": "device", "device_scale_factor_level": "ultra",
-                },
+            await _render_nj_body(
+                nj_qq=nj_qq,
+                nj_name=nj_name,
+                total_ml_str=_fmt_ml(total_ml),
+                total_count=total_count,
+                reset_date=reset_date,
+                days_left=days_left,
+                hours_left=hours_left,
+                ranking=ranking,
+                out_path=tmp_path,
+                cache_dir=os.path.join(self.curr_dir, "avatar_cache"),
+                titles_path=os.path.join(self.curr_dir, "nj_body_titles.json"),
             )
-            yield event.image_result(url)
+            yield event.image_result(tmp_path)
         except Exception as e:
             logger.error(f"渲染nj体内失败: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     # ============================================================
     # 插件卸载清理
@@ -631,6 +849,7 @@ class CaonjPlugin(Star):
         save_json(self.caonj_records_file, self.caonj_records)
         save_json(self.caonj_daily_file,   self.caonj_daily)
         save_json(self.nj_body_file,       self.nj_body_data)
+        save_json(self.nj_battle_file,     self.nj_battle_data)
 
         for task in tuple(self._withdraw_tasks):
             task.cancel()

@@ -10,6 +10,17 @@
             "step": 5
         }
     },
+    "fancao_probability": {
+        "type": "float",
+        "description": "反草触发阈值（%）",
+        "hint": "草nj失败时，系统会生成一个随机「逃走百分比」X（1~99）。只有当 X ≥ 此阈值时，nj才有资格反草，且反草成功概率就等于 X 本身。\n\n例如阈值设为 50：\n• X=30 → 低于阈值，不触发反草\n• X=70 → 高于阈值，有 70% 概率反草成功\n• X=95 → 高于阈值，有 95% 概率反草成功\n\n阈值越高，能触发反草的情况越少；设为 100 则关闭反草功能。",
+        "default": 50,
+        "slider": {
+            "min": 0,
+            "max": 100,
+            "step": 5
+        }
+    },
     "caonj_daily_limit": {
         "type": "int",
         "description": "每人每天草nj次数上限",
