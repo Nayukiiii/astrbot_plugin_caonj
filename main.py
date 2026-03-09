@@ -1,7 +1,9 @@
 import asyncio
 import json
+import math
 import os
 import random
+import secrets
 import time
 from datetime import datetime
 
@@ -16,6 +18,78 @@ CMD_NJ_BATTLE     = "nj战绩"     # nj注入战绩排行
 
 import json as _json
 import random as _random_mod
+
+def _secrets_roll() -> float:
+    """返回 [0, 1) 的密码学真随机浮点数"""
+    return secrets.randbelow(100000) / 100000.0
+
+
+def _calc_fancao_prob(
+    fake_pct: int,
+    times_today: int,
+    user_30d_count: int,
+    fancao_base: float,
+) -> float:
+    """
+    计算反草触发概率。
+    - Q：逃脱质量（sigmoid），越低越濒死
+    - G：累积仇恨，被Q部分压制但轻松逃时保留残余
+    - T：今日压力，同上
+    - E：真随机熵扰动 ±0.06，替代时间因子
+    - cap：上限随base线性开放（base=50→0.92，base=100→0.98）
+    """
+    Q = 1.0 / (1.0 + math.exp(-(fake_pct - 50) / 12.0))
+    G = (1.0 - math.exp(-user_30d_count / 15.0)) * ((1.0 - Q) ** 2 + 0.04)
+    T = (1.0 - math.exp(-times_today / 4.0)) * ((1.0 - Q) ** 1.5 + 0.02)
+    E = (secrets.randbelow(10000) / 10000.0 - 0.5) * 0.12
+    base_rate = fancao_base / 100.0
+    cap = 0.88 + (fancao_base / 100.0) * 0.10
+    raw = base_rate * ((1.0 - Q) ** 2 + G * 0.5 + T * 0.3) + E
+    return max(0.01, min(cap, raw))
+
+
+def _roll_injection_ml(fake_pct: int | None, grudge: float) -> float:
+    """
+    对数正态双峰注入量。
+    - fake_pct=None 表示草nj（非反草），用中性参数
+    - 反草时 fake_pct 越低（越濒死）均值越高；grudge 越高方差越大
+    """
+    if fake_pct is None:
+        # 草nj注入：中性对数正态，中位数约 200 mL
+        mu    = 5.3
+        sigma = 1.2
+    else:
+        Q     = 1.0 / (1.0 + math.exp(-(fake_pct - 50) / 12.0))
+        # 情绪失控概率：濒死 × 仇恨
+        berserk_prob = (1.0 - Q) * grudge
+        mode_roll    = secrets.randbelow(10000) / 10000.0
+        if mode_roll < berserk_prob:
+            # 模式A：情绪失控，高均值高方差
+            mu    = 5.3 + (1.0 - Q) * 2.2
+            sigma = 1.4 + grudge * 0.9
+        else:
+            # 模式B：精准报复，中等均值低方差
+            mu    = 4.8 + grudge * 0.5
+            sigma = 0.6 + Q * 0.3
+    raw = random.lognormvariate(mu=mu, sigma=sigma)
+    return round(max(0.5, min(raw, 9999.0)), 1)
+
+
+def _ml_grade(ml: float) -> str:
+    """根据注入量返回评级字符串（字符由用户自定义，这里只做分档）"""
+    if ml >= 4000:
+        return "SSS"
+    elif ml >= 800:
+        return "S"
+    elif ml >= 300:
+        return "A"
+    elif ml >= 80:
+        return "B"
+    elif ml >= 20:
+        return "C"
+    else:
+        return "D"
+
 
 def _load_comments(json_path: str) -> list:
     try:
@@ -91,8 +165,10 @@ class CaonjPlugin(Star):
         # 草nj内外选择等待状态 {group_id: {user_id: True}}
         self._caonj_pending: dict[str, dict[str, bool]] = {}
 
-        # 反草等待状态 {group_id: {user_id: True}}  —— nj反草发起者
+        # 反草等待状态 {group_id: {user_id: True}}
         self._fancao_pending: dict[str, dict[str, bool]] = {}
+        # 反草meta {group_id: {user_id: {fake_pct, grudge}}}，独立存放
+        self._fancao_meta: dict[str, dict[str, dict]] = {}
 
         # nj战绩数据文件（30天，记录nj注入了谁多少量）
         self.nj_battle_file = os.path.join(self.data_dir, "nj_battle.json")
@@ -244,41 +320,57 @@ class CaonjPlugin(Star):
             yield event.plain_result(f"你今天已经草了 {daily_limit} 次nj了，nj受不了啦，明天再来吧~")
             return
 
-        # 概率判定
+        # 概率判定（真随机）
         caonj_prob = float(self.config.get("caonj_probability", 30))
         caonj_prob = max(0.0, min(100.0, caonj_prob))
-        if random.uniform(0, 100) > caonj_prob:
-            fake_pct = random.randint(1, 99)
+        if _secrets_roll() >= caonj_prob / 100.0:
+            fake_pct = secrets.randbelow(99) + 1   # 1~99，仅用于显示和反草计算
 
-            # 反草判定：fake_pct >= 阈值才有资格，再用 fake_pct 本身作概率掷骰子
-            fancao_threshold = float(self.config.get("fancao_probability", 50))
-            fancao_threshold = max(0.0, min(99.0, fancao_threshold))
-            if fake_pct >= fancao_threshold and random.uniform(0, 100) < fake_pct:
-                # 反草成功 —— 进入发起者的等待状态
-                user_name = event.get_sender_name() or f"用户({user_id})"
-                nj_name   = self.config.get("nj_name", "宁隽")
-                if group_id not in self._fancao_pending:
-                    self._fancao_pending[group_id] = {}
-                self._fancao_pending[group_id][user_id] = True
+            # 反草判定
+            fancao_base = float(self.config.get("fancao_probability", 50))
+            fancao_base = max(0.0, min(100.0, fancao_base))
 
-                text = (
-                    f" nj不甘示弱，反草成功！🔥\n"
-                    f"【{nj_name}】反草了【{user_name}】！\n\n"
-                    f"请选择：回复【里面】或【外面】"
-                )
-                if self._can_onebot_withdraw(event):
-                    message_id = await self._send_onebot_message(
-                        event,
-                        message=[
-                            {"type": "at", "data": {"qq": user_id}},
-                            {"type": "text", "data": {"text": text}},
-                        ],
+            if fancao_base > 0:
+                # 取今日被草记录数（今日群内总压力）
+                times_today    = len(self._get_caonj_group_records(group_id))
+                # 取该用户30天内草nj成功次数（仇恨值）
+                user_30d_count = len(self.caonj_stats.get(group_id, {}).get(user_id, []))
+
+                p_fancao = _calc_fancao_prob(fake_pct, times_today, user_30d_count, fancao_base)
+
+                if _secrets_roll() < p_fancao:
+                    # 反草成功
+                    user_name = event.get_sender_name() or f"用户({user_id})"
+                    nj_name   = self.config.get("nj_name", "宁隽")
+                    if group_id not in self._fancao_pending:
+                        self._fancao_pending[group_id] = {}
+                    self._fancao_pending[group_id][user_id] = True
+                    # 保存fake_pct和grudge供注入量计算用
+                    if group_id not in self._fancao_meta:
+                        self._fancao_meta[group_id] = {}
+                    self._fancao_meta[group_id][user_id] = {
+                        "fake_pct": fake_pct,
+                        "grudge": min(1.0, user_30d_count / 15.0),
+                    }
+
+                    text = (
+                        f" nj不甘示弱，反草成功！🔥\n"
+                        f"【{nj_name}】反草了【{user_name}】！\n\n"
+                        f"请选择：回复【里面】或【外面】"
                     )
-                    if message_id is not None:
-                        self._schedule_onebot_delete_msg(event.bot, message_id=message_id)
+                    if self._can_onebot_withdraw(event):
+                        message_id = await self._send_onebot_message(
+                            event,
+                            message=[
+                                {"type": "at", "data": {"qq": user_id}},
+                                {"type": "text", "data": {"text": text}},
+                            ],
+                        )
+                        if message_id is not None:
+                            self._schedule_onebot_delete_msg(event.bot, message_id=message_id)
+                        return
+                    yield event.chain_result([Comp.At(qq=user_id), Comp.Plain(text)])
                     return
-                yield event.chain_result([Comp.At(qq=user_id), Comp.Plain(text)])
-                return
 
             yield event.plain_result(f"在 {fake_pct}% 的时候被nj逃走了")
             return
@@ -379,12 +471,13 @@ class CaonjPlugin(Star):
         nj_name = self.config.get("nj_name", "宁隽")
 
         if msg == "里面":
-            ml = round(random.uniform(5.0, 5000.0), 1)
+            ml    = _roll_injection_ml(fake_pct=None, grudge=0.0)
+            grade = _ml_grade(ml)
             self._record_nj_body(group_id, user_id, ml)
             _body_comment = _pick_comment(self._body_comments, ml)
             text = (
                 f" 【{user_name}】选择了射在里面！\n"
-                f"本次注入量：{_fmt_ml(ml)}\n"
+                f"本次注入量：{_fmt_ml(ml)}　评级：{grade}\n"
                 + (_body_comment if _body_comment else f"{nj_name} 感觉热热的~")
             )
         else:
@@ -427,20 +520,24 @@ class CaonjPlugin(Star):
         if msg not in ("里面", "外面"):
             return
 
-        # 清除等待状态
+        # 清除等待状态，取出meta（fake_pct / grudge）
         del self._fancao_pending[group_id][user_id]
+        meta   = self._fancao_meta.get(group_id, {}).pop(user_id, {})
+        f_pct  = meta.get("fake_pct", 50)
+        grudge = meta.get("grudge", 0.0)
 
         user_name = event.get_sender_name() or f"用户({user_id})"
         nj_name   = self.config.get("nj_name", "宁隽")
 
         if msg == "里面":
-            ml = round(random.uniform(5.0, 5000.0), 1)
+            ml    = _roll_injection_ml(fake_pct=f_pct, grudge=grudge)
+            grade = _ml_grade(ml)
             # 记录nj战绩（nj注入了该user）
             self._record_nj_battle(group_id, user_id, ml)
             _battle_comment = _pick_comment(self._battle_comments, ml)
             text = (
                 f" 【{user_name}】选择了让nj射在里面！\n"
-                f"【{nj_name}】本次注入量：{_fmt_ml(ml)}\n"
+                f"【{nj_name}】本次注入量：{_fmt_ml(ml)}　评级：{grade}\n"
                 + (_battle_comment if _battle_comment else f"【{user_name}】感觉热热的~")
             )
         else:
