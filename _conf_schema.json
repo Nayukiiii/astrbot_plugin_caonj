@@ -32,6 +32,17 @@
             "step": 1
         }
     },
+    "reset_daily_attempts": {
+        "type": "int",
+        "description": "每人每天重置尝试次数上限",
+        "hint": "普通用户每天最多可以尝试【重置草nj】的次数。每次尝试都会按草nj触发概率掷骰，成功才能重置。bot管理员不受此限制。",
+        "default": 3,
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        }
+    },
     "nj_qq": {
         "type": "string",
         "description": "nj的QQ号",

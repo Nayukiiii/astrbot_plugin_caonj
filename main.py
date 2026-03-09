@@ -14,6 +14,8 @@ CMD_CAONJ         = "草nj"       # 触发草nj
 CMD_CAONJ_RANKING = "草nj排行"   # 查看谁草的最多
 CMD_CAONJ_GRAPH   = "草nj关系图" # 今日草nj关系图
 CMD_NJ_BATTLE     = "nj战绩"     # nj注入战绩排行
+CMD_OUTSIDE_RANK  = "杂鱼排行"   # 选外面的杂鱼排行
+CMD_RESET_CAONJ   = "重置草nj"   # 重置今日草nj次数
 # ============================================================
 
 import json as _json
@@ -53,11 +55,12 @@ def _roll_injection_ml(fake_pct: int | None, grudge: float) -> float:
     对数正态双峰注入量。
     - fake_pct=None 表示草nj（非反草），用中性参数
     - 反草时 fake_pct 越低（越濒死）均值越高；grudge 越高方差越大
+    - 上限 100L，sigma 收紧使极大值极难触发
     """
     if fake_pct is None:
         # 草nj注入：中性对数正态，中位数约 200 mL
         mu    = 5.3
-        sigma = 1.2
+        sigma = 1.0
     else:
         Q     = 1.0 / (1.0 + math.exp(-(fake_pct - 50) / 12.0))
         # 情绪失控概率：濒死 × 仇恨
@@ -65,30 +68,30 @@ def _roll_injection_ml(fake_pct: int | None, grudge: float) -> float:
         mode_roll    = secrets.randbelow(10000) / 10000.0
         if mode_roll < berserk_prob:
             # 模式A：情绪失控，高均值高方差
-            mu    = 5.3 + (1.0 - Q) * 2.2
-            sigma = 1.4 + grudge * 0.9
+            mu    = 5.3 + (1.0 - Q) * 1.5
+            sigma = 1.0 + grudge * 0.5
         else:
             # 模式B：精准报复，中等均值低方差
             mu    = 4.8 + grudge * 0.5
             sigma = 0.6 + Q * 0.3
     raw = random.lognormvariate(mu=mu, sigma=sigma)
-    return round(max(0.5, min(raw, 9999.0)), 1)
+    return round(max(0.5, min(raw, 100000.0)), 1)
 
 
 def _ml_grade(ml: float) -> str:
     """根据注入量返回评级字符串（字符由用户自定义，这里只做分档）"""
     if ml >= 4000:
-        return "SSS"
+        return "雕王"
+    elif ml >= 2000:
+        return "半雕王"
     elif ml >= 800:
-        return "S"
-    elif ml >= 300:
-        return "A"
-    elif ml >= 80:
-        return "B"
-    elif ml >= 20:
-        return "C"
+        return "半死不死建议死"
+    elif ml >= 400:
+        return "杂鱼杂鱼就只有这点吗真是杂～鱼～欧～尼～酱～"
+    elif ml >= 200:
+        return "杂鱼杂鱼就只有这点吗真是杂～鱼～欧～尼～酱～"
     else:
-        return "D"
+        return "杂鱼杂鱼就只有这点吗真是杂～鱼～欧～尼～酱～"
 
 
 def _load_comments(json_path: str) -> list:
@@ -101,6 +104,22 @@ def _load_comments(json_path: str) -> list:
 def _pick_comment(tiers: list, ml: float) -> str | None:
     for tier in tiers:
         if ml >= tier["min_ml"]:
+            comments = [c for c in tier.get("comments", []) if c]
+            if comments:
+                return _random_mod.choice(comments)
+            return None
+    return None
+
+def _load_fancao_comments(json_path: str) -> list:
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return _json.load(f).get("grudge_tiers", [])
+    except Exception:
+        return []
+
+def _pick_fancao_comment(tiers: list, grudge: float) -> str | None:
+    for tier in tiers:
+        if grudge >= tier["min_grudge"]:
             comments = [c for c in tier.get("comments", []) if c]
             if comments:
                 return _random_mod.choice(comments)
@@ -125,6 +144,7 @@ from .src.utils import (
 )
 from .nj_body_render import render_nj_body as _render_nj_body
 from .nj_battle_render import render_nj_battle as _render_nj_battle
+from .outside_rank_render import render_outside_rank as _render_outside_rank
 
 
 def _fmt_ml(ml: float) -> str:
@@ -170,12 +190,20 @@ class CaonjPlugin(Star):
         # 反草meta {group_id: {user_id: {fake_pct, grudge}}}，独立存放
         self._fancao_meta: dict[str, dict[str, dict]] = {}
 
+        # 重置尝试次数 {date: {group_id: {user_id: int}}}，内存维护，重启归零
+        self._reset_attempts: dict[str, dict[str, dict[str, int]]] = {}
+
         # nj战绩数据文件（30天，记录nj注入了谁多少量）
         self.nj_battle_file = os.path.join(self.data_dir, "nj_battle.json")
         self.nj_battle_data = load_json(self.nj_battle_file, {})
 
-        self._body_comments   = _load_comments(os.path.join(self.curr_dir, "nj_body_comments.json"))
-        self._battle_comments = _load_comments(os.path.join(self.curr_dir, "nj_battle_comments.json"))
+        # 杂鱼数据文件（30天，记录选外面的次数和放弃量）
+        self.outside_stats_file = os.path.join(self.data_dir, "outside_stats.json")
+        self.outside_stats_data = load_json(self.outside_stats_file, {})
+
+        self._body_comments    = _load_comments(os.path.join(self.curr_dir, "nj_body_comments.json"))
+        self._battle_comments  = _load_comments(os.path.join(self.curr_dir, "nj_battle_comments.json"))
+        self._fancao_comments  = _load_fancao_comments(os.path.join(self.curr_dir, "nj_fancao_comments.json"))
 
         logger.info(f"草nj插件已加载。数据目录: {self.data_dir}")
 
@@ -342,6 +370,7 @@ class CaonjPlugin(Star):
                     # 反草成功
                     user_name = event.get_sender_name() or f"用户({user_id})"
                     nj_name   = self.config.get("nj_name", "宁隽")
+                    grudge = min(1.0, user_30d_count / 15.0)
                     if group_id not in self._fancao_pending:
                         self._fancao_pending[group_id] = {}
                     self._fancao_pending[group_id][user_id] = True
@@ -350,11 +379,12 @@ class CaonjPlugin(Star):
                         self._fancao_meta[group_id] = {}
                     self._fancao_meta[group_id][user_id] = {
                         "fake_pct": fake_pct,
-                        "grudge": min(1.0, user_30d_count / 15.0),
+                        "grudge": grudge,
                     }
 
+                    _fancao_comment = _pick_fancao_comment(self._fancao_comments, grudge)
                     text = (
-                        f" nj不甘示弱，反草成功！🔥\n"
+                        f" {_fancao_comment or 'nj不甘示弱，反草成功！🔥'}\n"
                         f"【{nj_name}】反草了【{user_name}】！\n\n"
                         f"请选择：回复【里面】或【外面】"
                     )
@@ -481,6 +511,9 @@ class CaonjPlugin(Star):
                 + (_body_comment if _body_comment else f"{nj_name} 感觉热热的~")
             )
         else:
+            # 偷偷roll一次量做统计，但不注入
+            _outside_ml = _roll_injection_ml(fake_pct=None, grudge=0.0)
+            self._record_outside(group_id, user_id, _outside_ml)
             text = (
                 f" 【{user_name}】选择了射在外面！✨\n"
                 f"{nj_name} 松了一口气~"
@@ -541,6 +574,8 @@ class CaonjPlugin(Star):
                 + (_battle_comment if _battle_comment else f"【{user_name}】感觉热热的~")
             )
         else:
+            _outside_ml = _roll_injection_ml(fake_pct=f_pct, grudge=grudge)
+            self._record_outside(group_id, user_id, _outside_ml)
             text = (
                 f" 【{user_name}】选择了让nj射在外面！✨\n"
                 f"【{nj_name}】松了一口气~"
@@ -590,6 +625,37 @@ class CaonjPlugin(Star):
             if new_users:
                 new_data[gid] = new_users
         self.nj_battle_data = new_data
+
+    # ============================================================
+    # 杂鱼数据辅助
+    # ============================================================
+
+    def _record_outside(self, group_id: str, user_id: str, ml: float) -> None:
+        """记录选外面的次数和放弃量（30天滚动）"""
+        now = time.time()
+        if group_id not in self.outside_stats_data:
+            self.outside_stats_data[group_id] = {}
+        gdata = self.outside_stats_data[group_id]
+        if user_id not in gdata:
+            gdata[user_id] = {"records": []}
+        gdata[user_id]["records"].append({"ts": now, "ml": ml})
+        self._clean_outside()
+        save_json(self.outside_stats_file, self.outside_stats_data)
+
+    def _clean_outside(self) -> None:
+        """清理30天前的杂鱼记录"""
+        now = time.time()
+        cutoff = 30 * 24 * 3600
+        new_data = {}
+        for gid, users in self.outside_stats_data.items():
+            new_users = {}
+            for uid, udata in users.items():
+                valid = [r for r in udata.get("records", []) if now - r["ts"] < cutoff]
+                if valid:
+                    new_users[uid] = {"records": valid}
+            if new_users:
+                new_data[gid] = new_users
+        self.outside_stats_data = new_data
 
     # ============================================================
     # /nj战绩
@@ -670,6 +736,189 @@ class CaonjPlugin(Star):
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+
+    # ============================================================
+    # /杂鱼排行
+    # ============================================================
+
+    @filter.command(CMD_OUTSIDE_RANK)
+    async def outside_rank(self, event: AstrMessageEvent):
+        async for result in self._cmd_outside_rank(event):
+            yield result
+
+    async def _cmd_outside_rank(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+
+        self._clean_outside()
+        gdata = self.outside_stats_data.get(group_id, {})
+
+        if not gdata:
+            yield event.plain_result("近30天还没有人在外面射过，大家都很勇敢~")
+            return
+
+        # 拉群昵称
+        user_map = {}
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                assert isinstance(event, AiocqhttpMessageEvent)
+                members = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id)
+                )
+                if isinstance(members, dict) and "data" in members and isinstance(members["data"], list):
+                    members = members["data"]
+                for m in members:
+                    uid = str(m.get("user_id"))
+                    user_map[uid] = m.get("card") or m.get("nickname") or uid
+        except Exception:
+            pass
+
+        # 聚合数据
+        ranking = []
+        for uid, udata in gdata.items():
+            records  = udata.get("records", [])
+            total_ml = sum(r["ml"] for r in records)
+            count    = len(records)
+            ranking.append({
+                "uid":     uid,
+                "name":    user_map.get(uid, f"用户({uid})"),
+                "count":   count,
+                "_ml_raw": total_ml,
+                "ml":      _fmt_ml(total_ml),
+            })
+
+        ranking_by_count = sorted(ranking, key=lambda x: x["count"],   reverse=True)[:10]
+        ranking_by_ml    = sorted(ranking, key=lambda x: x["_ml_raw"], reverse=True)[:10]
+
+        nj_qq   = self.config.get("nj_qq",   "")
+        nj_name = self.config.get("nj_name", "宁隽")
+
+        import tempfile
+        tmp_path = tempfile.mktemp(suffix=".png")
+        try:
+            await _render_outside_rank(
+                nj_qq=nj_qq,
+                nj_name=nj_name,
+                ranking_by_count=ranking_by_count,
+                ranking_by_ml=ranking_by_ml,
+                out_path=tmp_path,
+                cache_dir=os.path.join(self.curr_dir, "avatar_cache"),
+                titles_path=os.path.join(self.curr_dir, "outside_titles.json"),
+            )
+            yield event.image_result(tmp_path)
+        except Exception as e:
+            logger.error(f"渲染杂鱼排行失败: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    # ============================================================
+    # /重置草nj
+    # ============================================================
+
+    @filter.command(CMD_RESET_CAONJ)
+    async def reset_caonj(self, event: AstrMessageEvent):
+        async for result in self._cmd_reset_caonj(event):
+            yield result
+
+    async def _cmd_reset_caonj(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+
+        user_id   = str(event.get_sender_id())
+        today     = datetime.now().strftime("%Y-%m-%d")
+        nj_name   = self.config.get("nj_name", "宁隽")
+
+        # 判断是否 bot 管理员
+        is_admin = False
+        try:
+            admins = self.context.config_helper.admins or []
+            is_admin = str(user_id) in [str(a) for a in admins]
+        except Exception:
+            pass
+
+        # 解析 at 目标（管理员专用）
+        at_target: str | None = None
+        reset_all = False
+        raw = event.message_str.strip()
+        if raw == "全员":
+            reset_all = True
+        else:
+            # 尝试从消息链取第一个 At
+            for seg in event.get_messages():
+                if hasattr(seg, "qq") and str(seg.qq) != user_id:
+                    at_target = str(seg.qq)
+                    break
+
+        # 确保今日caonj_daily存在
+        if self.caonj_daily.get("date") != today:
+            self.caonj_daily = {"date": today, "groups": {}}
+
+        # ── 管理员逻辑 ──────────────────────────────────────
+        if is_admin:
+            if reset_all:
+                self.caonj_daily["groups"][group_id] = {}
+                save_json(self.caonj_daily_file, self.caonj_daily)
+                yield event.plain_result(f"已重置本群所有人今日草{nj_name}次数~")
+                return
+
+            target_id = at_target or user_id
+            if group_id in self.caonj_daily["groups"]:
+                self.caonj_daily["groups"][group_id].pop(target_id, None)
+            save_json(self.caonj_daily_file, self.caonj_daily)
+            if target_id == user_id:
+                yield event.plain_result(f"已重置你今日草{nj_name}的次数~")
+            else:
+                yield event.plain_result(f"已重置 {target_id} 今日草{nj_name}的次数~")
+            return
+
+        # ── 普通用户逻辑（概率+次数限制）──────────────────
+        if at_target or reset_all:
+            yield event.plain_result("你没有权限重置他人的次数哦~")
+            return
+
+        max_attempts = int(self.config.get("reset_daily_attempts", 3))
+
+        # 取今日已用尝试次数
+        day_attempts = self._reset_attempts.setdefault(today, {}).setdefault(group_id, {})
+        used = day_attempts.get(user_id, 0)
+
+        if used >= max_attempts:
+            yield event.plain_result(f"你今天已经尝试了 {max_attempts} 次，机会用完了~")
+            return
+
+        # 扣除一次尝试
+        day_attempts[user_id] = used + 1
+        remaining = max_attempts - used - 1
+
+        # 掷骰
+        caonj_prob = float(self.config.get("caonj_probability", 30))
+        caonj_prob = max(0.0, min(100.0, caonj_prob))
+
+        if _secrets_roll() < caonj_prob / 100.0:
+            # 成功
+            if group_id in self.caonj_daily["groups"]:
+                self.caonj_daily["groups"][group_id].pop(user_id, None)
+            save_json(self.caonj_daily_file, self.caonj_daily)
+            yield event.plain_result(
+                f"重置成功！今日草{nj_name}次数已清零~\n"
+                f"（今日剩余尝试次数：{remaining}）"
+            )
+        else:
+            yield event.plain_result(
+                f"重置失败，{nj_name}不配合你~\n"
+                f"（今日剩余尝试次数：{remaining}）"
+            )
 
     @filter.command(CMD_CAONJ_RANKING)
     async def caonj_ranking(self, event: AstrMessageEvent):
