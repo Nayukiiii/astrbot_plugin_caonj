@@ -39,16 +39,19 @@ def _load_titles(json_path: str) -> dict:
         return {"ml_tiers": [], "count_tiers": []}
 
 
-def _pick_title(tiers: list, key_min: str, value: float | int) -> str | None:
-    """从分段配置中匹配并随机抽一条称号，无匹配返回None"""
-    import random
+def _pick_title(tiers: list, key_min: str, value) -> list:
+    """从分段配置中匹配档位，返回该档位的titles列表，无匹配返回空列表"""
     for tier in tiers:
         if value >= tier[key_min]:
-            titles = [t for t in tier.get("titles", []) if t]
-            if titles:
-                return random.choice(titles)
-            return None
-    return None
+            return [t for t in tier.get("titles", []) if t]
+    return []
+
+
+def _pick_combined_title(cfg: dict, ml_value: float, count_value: int) -> str | None:
+    """合并ml和count各自匹配档位的titles池，随机抽一条返回"""
+    import random
+    pool = _pick_title(cfg.get("ml_tiers", []), "min_ml", ml_value) +            _pick_title(cfg.get("count_tiers", []), "min_count", count_value)
+    return random.choice(pool) if pool else None
 
 # CSS 变量对照
 BG_PAGE      = (255, 245, 247)
@@ -283,13 +286,12 @@ async def render_nj_body(
                 _tc(draw, avx+AV2//2, avy+(AV2-_th(draw,ini2,fn_i2))//2,
                     ini2, fn_i2, TEXT_LIGHT)
 
-            # 名字 + 称号标签
+            # 名字 + 称号标签（合并ml/count池随机抽一条，紫色）
             fn_nm  = _font(_FONT_MED, 14*S)
             ft_t   = _font(_FONT_REG,  9*S)
             nx     = avx + AV2 + 10*S
-            ml_title    = _pick_title(_titles_cfg["ml_tiers"],    "min_ml",    user.get("_ml_raw", 0.0))
-            count_title = _pick_title(_titles_cfg["count_tiers"], "min_count", user.get("count", 0))
-            has_title   = ml_title or count_title
+            title     = _pick_combined_title(_titles_cfg, user.get("_ml_raw", 0.0), user.get("count", 0))
+            has_title = bool(title)
 
             if has_title:
                 name_y = iy + ITEM_H//2 - _th(draw, user["name"], fn_nm) - 3*S
@@ -299,22 +301,13 @@ async def render_nj_body(
 
             if has_title:
                 TAG_PX, TAG_PY = 5*S, 2*S
-                TAG_GAP = 4*S
                 tx = nx
                 ty = name_y + _th(draw, user["name"], fn_nm) + 3*S
-                if ml_title:
-                    bw = _tw(draw, ml_title, ft_t) + TAG_PX*2
-                    bh = _th(draw, ml_title, ft_t) + TAG_PY*2
-                    _shadow(draw, tx, ty, tx+bw, ty+bh, 2*S)
-                    _grad_h(draw, tx, ty, tx+bw, ty+bh, ACCENT_LIGHT, ACCENT)
-                    draw.text((tx+TAG_PX, ty+TAG_PY), ml_title, font=ft_t, fill=TEXT_LIGHT)
-                    tx += bw + TAG_GAP
-                if count_title:
-                    bw2 = _tw(draw, count_title, ft_t) + TAG_PX*2
-                    bh2 = _th(draw, count_title, ft_t) + TAG_PY*2
-                    _shadow(draw, tx, ty, tx+bw2, ty+bh2, 2*S, (214, 190, 230))
-                    _grad_h(draw, tx, ty, tx+bw2, ty+bh2, (210,170,230), (150,80,160))
-                    draw.text((tx+TAG_PX, ty+TAG_PY), count_title, font=ft_t, fill=TEXT_LIGHT)
+                bw = _tw(draw, title, ft_t) + TAG_PX*2
+                bh = _th(draw, title, ft_t) + TAG_PY*2
+                _shadow(draw, tx, ty, tx+bw, ty+bh, 2*S, (214, 190, 230))
+                _grad_h(draw, tx, ty, tx+bw, ty+bh, (210,170,230), (150,80,160))
+                draw.text((tx+TAG_PX, ty+TAG_PY), title, font=ft_t, fill=TEXT_LIGHT)
 
             # 双标签（右对齐，count上 ml下）
             cnt_txt = f"{user['count']} 次"

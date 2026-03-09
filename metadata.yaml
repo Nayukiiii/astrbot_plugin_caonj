@@ -1,6 +1,6 @@
 name: astrbot_plugin_caonj
 desc: "草nj插件，支持草nj、nj体内液体统计、排行榜、今日关系图等功能。"
 display_name: 草nj
-version: v1.0.0
+version: v1.0.1
 author: Nayuki
 repo: https://github.com/Nayukiiii/astrbot_plugin_caonj

@@ -41,15 +41,20 @@ def _load_titles(json_path: str) -> dict:
 
 
 def _pick_title(tiers: list, key_min: str, value) -> str | None:
-    """从分段配置中匹配并随机抽一条称号，无匹配返回None"""
-    import random
+    """从分段配置中匹配档位，返回该档位的titles列表（不抽取），无匹配返回空列表"""
     for tier in tiers:
         if value >= tier[key_min]:
-            titles = [t for t in tier.get("titles", []) if t]
-            if titles:
-                return random.choice(titles)
-            return None
-    return None
+            return [t for t in tier.get("titles", []) if t]
+    return []
+
+
+def _pick_combined_title(cfg: dict, ml_value: float, count_value: int) -> str | None:
+    """合并ml和count各自匹配档位的titles池，随机抽一条返回"""
+    import random
+    ml_pool    = _pick_title(cfg.get("ml_tiers",    []), "min_ml",    ml_value)
+    count_pool = _pick_title(cfg.get("count_tiers", []), "min_count", count_value)
+    pool = ml_pool + count_pool
+    return random.choice(pool) if pool else None
 
 
 # 色彩系统（同 nj_body_render）
@@ -232,11 +237,10 @@ def _draw_ranking_section(
         if name != user["name"]:
             name = name[:-1] + "…"
 
-        # 从json配置取称号
-        _tc_cfg     = titles_cfg or {"ml_tiers": [], "count_tiers": []}
-        ml_title    = _pick_title(_tc_cfg["ml_tiers"],    "min_ml",    user.get("_ml_raw", 0.0))
-        count_title = _pick_title(_tc_cfg["count_tiers"], "min_count", user.get("count", 0))
-        has_title   = ml_title or count_title
+        # 从json配置取称号：合并ml和count两档的池子随机抽一条
+        _tc_cfg   = titles_cfg or {"ml_tiers": [], "count_tiers": []}
+        title     = _pick_combined_title(_tc_cfg, user.get("_ml_raw", 0.0), user.get("count", 0))
+        has_title = bool(title)
 
         if has_title:
             name_y = iy + ITEM_H // 2 - _th(draw, name, fn_nm) - 4*S
@@ -248,20 +252,11 @@ def _draw_ranking_section(
             tx = nx
             ty = name_y + _th(draw, name, fn_nm) + 3*S
             TAG_PX, TAG_PY = 5*S, 2*S
-            TAG_GAP = 4*S
-            if ml_title:
-                bw = _tw(draw, ml_title, ft_t) + TAG_PX*2
-                bh = _th(draw, ml_title, ft_t) + TAG_PY*2
-                _shadow(draw, tx, ty, tx+bw, ty+bh, 2*S, ACCENT_SOFT)
-                _grad_h(draw, tx, ty, tx+bw, ty+bh, ACCENT_LIGHT, ACCENT)
-                draw.text((tx+TAG_PX, ty+TAG_PY), ml_title, font=ft_t, fill=TEXT_LIGHT)
-                tx += bw + TAG_GAP
-            if count_title:
-                bw2 = _tw(draw, count_title, ft_t) + TAG_PX*2
-                bh2 = _th(draw, count_title, ft_t) + TAG_PY*2
-                _shadow(draw, tx, ty, tx+bw2, ty+bh2, 2*S, ACCENT2_SOFT)
-                _grad_h(draw, tx, ty, tx+bw2, ty+bh2, ACCENT2_LIGHT, ACCENT2)
-                draw.text((tx+TAG_PX, ty+TAG_PY), count_title, font=ft_t, fill=TEXT_LIGHT)
+            bw = _tw(draw, title, ft_t) + TAG_PX*2
+            bh = _th(draw, title, ft_t) + TAG_PY*2
+            _shadow(draw, tx, ty, tx+bw, ty+bh, 2*S, ACCENT2_SOFT)
+            _grad_h(draw, tx, ty, tx+bw, ty+bh, ACCENT2_LIGHT, ACCENT2)
+            draw.text((tx+TAG_PX, ty+TAG_PY), title, font=ft_t, fill=TEXT_LIGHT)
 
         # 数值标签（右侧对齐，垂直居中）
         if is_ml_rank:
