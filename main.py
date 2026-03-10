@@ -158,6 +158,39 @@ def _fmt_ml(ml: float) -> str:
 
 
 class CaonjPlugin(Star):
+
+    def _get_bot_admins(self) -> list:
+        """从 AstrBot 配置文件直接读取管理员列表。"""
+        import glob as _glob
+        candidates = []
+        try:
+            import astrbot
+            _d = os.path.dirname(os.path.dirname(astrbot.__file__))
+            candidates.append(os.path.join(_d, "data", "cmd_config.json"))
+        except Exception:
+            pass
+        candidates += _glob.glob("/home/**/AstrBot/data/cmd_config.json", recursive=True)
+        candidates += ["/AstrBot/data/cmd_config.json"]
+        for candidate in list(dict.fromkeys(candidates)):
+            if os.path.exists(candidate):
+                try:
+                    import json as _j
+                    with open(candidate, "r", encoding="utf-8-sig") as f:
+                        d = _j.load(f)
+                    result = d.get("admins_id") or d.get("admins") or []
+                    if result:
+                        return [str(a) for a in result]
+                except Exception:
+                    pass
+        try:
+            result = (
+                getattr(self.context.config_helper, "admins_id", None)
+                or getattr(self.context.config_helper, "admins", None)
+                or []
+            )
+            return [str(a) for a in result]
+        except Exception:
+            return []
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config
@@ -507,7 +540,7 @@ class CaonjPlugin(Star):
             _body_comment = _pick_comment(self._body_comments, ml)
             text = (
                 f" 【{user_name}】选择了射在里面！\n"
-                f"本次注入量：{_fmt_ml(ml)}　评级：{grade}\n"
+                f"本次注入量：{_fmt_ml(ml)}　评分：{grade}\n"
                 + (_body_comment if _body_comment else f"{nj_name} 感觉热热的~")
             )
         else:
@@ -840,12 +873,8 @@ class CaonjPlugin(Star):
         nj_name   = self.config.get("nj_name", "宁隽")
 
         # 判断是否 bot 管理员
-        is_admin = False
-        try:
-            admins = self.context.config_helper.admins or []
-            is_admin = str(user_id) in [str(a) for a in admins]
-        except Exception:
-            pass
+        admins   = self._get_bot_admins()
+        is_admin = str(user_id) in admins
 
         # 解析 at 目标（管理员专用）
         at_target: str | None = None
